@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+
+import os
+import pickle
+import faiss
+import numpy as np
+import openai
+import nest_asyncio
+import logging
+
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from langchain_core.runnables import RunnablePassthrough, Runnable
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.documents import Document
+from langchain_openai import ChatOpenAI
+
+# --- Setup ---
+nest_asyncio.apply()
+openai.api_key = os.environ.get("OPENAI_API_KEY", "******")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "******")
+
+INDEX_FILE = "/home/duchampjt2/cardano_ai_docs/ADA_index.faiss"
+CHUNKS_FILE = "/home/duchampjt2/cardano_ai_docs/ADA_chunks.pkl"
+EMBEDDINGS_FILE = "/home/duchampjt2/cardano_ai_docs/ADA_embeddings.npy"
+
+# --- Load Cache ---
+def load_cache(index_path, chunks_path, embeddings_path):
+    try:
+        with open(chunks_path, "rb") as f:
+            chunks = pickle.load(f)
+        embeddings = np.load(embeddings_path)
+        index = faiss.read_index(index_path)
+        return chunks, embeddings, index
+    except Exception as e:
+        print(f"Cache loading error: {e}")
+        return None, None, None
+
+chunks, embeddings, index = (load_cache(INDEX_FILE, CHUNKS_FILE, EMBEDDINGS_FILE)
+                              if os.path.exists(INDEX_FILE) else (None, None, None))
+
+# --- Embedding ---
+def get_embedding(text):
+    try:
+        # Use the new client interface for embeddings
+        client = openai.OpenAI(api_key=openai.api_key)
+        response = client.embeddings.create(input=text, model="text-embedding-3-small")
+        return response.data[0].embedding
+    except Exception as e:
+        print(f"Embedding error: {e}")
+        return np.zeros(1536).tolist()
+
+# --- LangChain RAG Chain ---
+llm = None
+retriever = None
+rag_chain = None
+
+if chunks and index:
+    llm = ChatOpenAI(model="gpt-4", temperature=0.3, api_key=openai.api_key)
+
+    class CustomRetriever(Runnable):
+        def __init__(self, faiss_index, chunks, embedding_function, k=3):
+            self.faiss_index = faiss_index
+            self.chunks = chunks
+            self.embedding_function = embedding_function
+            self.k = k
+
+        def invoke(self, input_text, config=None):
+            try:
+                vector = np.array([self.embedding_function(input_text)]).astype('float32')
+                _, indices = self.faiss_index.search(vector, self.k)
+                return [Document(page_content=self.chunks[i], metadata={"chunk_id": i})
+                        for i in indices[0] if 0 <= i < len(self.chunks)]
+            except Exception as e:
+                print(f"Retriever error: {e}")
+                return []
+
+    retriever = CustomRetriever(index, chunks, get_embedding)
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "Answer the question based on the following context:\n\n{context}"),
+        ("user", "{question}")
+    ])
+    rag_chain = ({"context": retriever, "question": RunnablePassthrough()}
+                 | prompt | llm | StrOutputParser())
+    print("✅ RAG chain initialized.")
+else:
+    print("❌ RAG not initialized. Cache files missing.")
+
+# --- Telegram Bot Handlers ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Welcome to the Cardano Builder Docs Chatbot.\nType a question to get started or type /help."
+    )
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "/start - Start the bot\n"
+        "/help - Show this message\n"
+        "/prompting - Prompt crafting help\n"
+    )
+
+async def prompting_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "💡 Prompting Tips:\nBe specific when asking about questions regarding the Cardano environment.\n"
+        "E.g., 'What are the best case scenarios to use Cardano?'"
+    )
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_query = update.message.text
+    if rag_chain is None:
+        await update.message.reply_text("RAG not available. Try again later.")
+        return
+
+    try:
+        response = rag_chain.invoke(user_query)
+        await update.message.reply_text(response)
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        await update.message.reply_text(f"An error occurred: {e}")
+
+# --- Launch Bot ---
+if __name__ == "__main__":
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("prompting", prompting_command))
+    #app.add_handler(CommandHandler("donate", donate))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    print("🚀 Bot is running...")
+    app.run_polling(poll_interval=3)
