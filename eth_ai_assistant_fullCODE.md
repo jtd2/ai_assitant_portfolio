@@ -23,9 +23,9 @@ openai.api_key = os.environ.get("OPENAI_API_KEY", "**********")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", 
 "**********:******************************************")
 
-INDEX_FILE = "/home/duchampjt2/eth_ai_docs_2/EthRedoRemix_index.faiss"
-CHUNKS_FILE = "/home/duchampjt2/eth_ai_docs_2/EthRedoRemix_chunks.pkl"
-EMBEDDINGS_FILE = "/home/duchampjt2/eth_ai_docs_2/EthRedoRemix_embeddings.npy"
+INDEX_FILE = "/home/**********/eth_ai_docs_2/EthRedoRemix_index.faiss"
+CHUNKS_FILE = "/home/**********/eth_ai_docs_2/EthRedoRemix_chunks.pkl"
+EMBEDDINGS_FILE = "/home/**********/eth_ai_docs_2/EthRedoRemix_embeddings.npy"
 
 # --- Load Cache ---
 def load_cache(index_path, chunks_path, embeddings_path):
